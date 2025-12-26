@@ -1,0 +1,149 @@
+name: Public ARM64 Image Builder
+
+on:
+  # Trigger via repository_dispatch from private repo
+  repository_dispatch:
+    types: [build-and-deploy]
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (branch/tag) to build'
+        required: true
+        default: 'main'
+      stack:
+        description: 'Pulumi stack (dev/prod)'
+        required: true
+        default: 'dev'
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy on ARM64
+    runs-on: ubuntu-24.04-arm  # Free ARM64 runner for public repos
+    
+    steps:
+      - name: Checkout public builder repo
+        uses: actions/checkout@v4
+      
+      - name: Clone private repository
+        env:
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          PRIVATE_REPO_URL: ${{ secrets.PRIVATE_REPO_URL }}
+        run: |
+          # Clone the private repository
+          git clone https://x-access-token:${PRIVATE_REPO_TOKEN}@${PRIVATE_REPO_URL} private-repo
+          cd private-repo
+          
+          # Checkout the specific ref if provided
+          if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
+            REF="${{ github.event.client_payload.ref }}"
+          else
+            REF="${{ github.event.inputs.ref }}"
+          fi
+          
+          echo "Checking out ref: $REF"
+          git checkout "$REF"
+          
+          # Show what we're building
+          echo "Building commit: $(git rev-parse HEAD)"
+          echo "Commit message: $(git log -1 --pretty=%B)"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ./private-repo/infra/package.json
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.PULUMI_AWS_ACCESS_KEY_ID }}
+          aws-region: us-east-2
+          aws-secret-access-key: ${{ secrets.PULUMI_AWS_SECRET_ACCESS_KEY }}
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install Pulumi dependencies
+        working-directory: ./private-repo/infra
+        run: npm install
+
+      - name: Setup Pulumi
+        uses: pulumi/actions@v6
+
+      - name: Determine Pulumi stack
+        id: determine_stack
+        run: |
+          if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
+            STACK="${{ github.event.client_payload.stack }}"
+            VERSION="${{ github.event.client_payload.version }}"
+          else
+            STACK="${{ github.event.inputs.stack }}"
+            VERSION="manual-$(date +%s)"
+          fi
+          
+          echo "stack=$STACK" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Deploying to stack: $STACK"
+          echo "Version: $VERSION"
+
+      - name: Select Pulumi stack
+        working-directory: ./private-repo/infra
+        run: |
+            pulumi stack select ${{ steps.determine_stack.outputs.stack }}
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+      - name: Configure Pulumi release tag
+        working-directory: ./private-repo/infra
+        run: |
+          pulumi config set frontend:releaseTag "${{ steps.determine_stack.outputs.version }}"
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+      - name: Configure deployment environment variables
+        id: configure_env
+        working-directory: ./private-repo/infra
+        run: |
+          # Extract config values from Pulumi
+          NEXT_PUBLIC_BASE_API_URL=$(pulumi config get frontend:nextPublicApiBaseUrl)
+          NEXT_PUBLIC_GEOFENCE_API_URL=$(pulumi config get frontend:nextPublicGeofenceBaseUrl)
+          
+          # Output to GitHub step outputs
+          echo "next_public_base_api_url=$NEXT_PUBLIC_BASE_API_URL" >> "$GITHUB_OUTPUT"
+          echo "next_public_geofence_api_url=$NEXT_PUBLIC_GEOFENCE_API_URL" >> "$GITHUB_OUTPUT"
+          
+          echo "Extracted NEXT_PUBLIC_BASE_API_URL: $NEXT_PUBLIC_BASE_API_URL"
+          echo "Extracted NEXT_PUBLIC_GEOFENCE_API_URL: $NEXT_PUBLIC_GEOFENCE_API_URL"
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+      - name: Deploy with Pulumi
+        uses: pulumi/actions@v6
+        with:
+          command: up
+          stack-name: ${{ steps.determine_stack.outputs.stack }}
+          work-dir: ./private-repo/infra
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          DOCKER_BUILDKIT: 1
+          BUILDKIT_PROGRESS: plain
+          NEXT_PUBLIC_BASE_API_URL: ${{ steps.configure_env.outputs.next_public_base_api_url }}
+          NEXT_PUBLIC_GEOFENCE_API_URL: ${{ steps.configure_env.outputs.next_public_geofence_api_url }}
+
+      - name: Export stack outputs
+        working-directory: ./private-repo/infra
+        run: pulumi stack output --json
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Remove the cloned private repo to avoid leaving credentials
+          rm -rf private-repo
+          # Clear any cached git credentials for this runner session
+          git credential-cache exit || true
+          # Unset any global credential helper configuration that may have been set
+          git config --global --unset credential.helper || true
+

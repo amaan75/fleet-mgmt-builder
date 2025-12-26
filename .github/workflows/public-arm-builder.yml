@@ -147,4 +147,8 @@ jobs:
         run: |
           # Remove the cloned private repo to avoid leaving credentials
           rm -rf private-repo
+          # Clear any cached git credentials for this runner session
+          git credential-cache exit || true
+          # Unset any global credential helper configuration that may have been set
+          git config --global --unset credential.helper || true
 

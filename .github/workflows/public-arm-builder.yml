@@ -1,4 +1,4 @@
-name: ARM64 Builder for Private Repo
+name: Public ARM64 Image Builder
 
 on:
   # Trigger via repository_dispatch from private repo
@@ -43,7 +43,7 @@ jobs:
           fi
           
           echo "Checking out ref: $REF"
-          git checkout $REF
+          git checkout "$REF"
           
           # Show what we're building
           echo "Building commit: $(git rev-parse HEAD)"

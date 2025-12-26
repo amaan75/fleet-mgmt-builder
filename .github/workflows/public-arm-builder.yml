@@ -87,17 +87,17 @@ jobs:
           echo "Deploying to stack: $STACK"
           echo "Version: $VERSION"
 
-      - name: Select Pulumi stack
-        working-directory: ./private-repo/infra
-        run: |
-          pulumi stack ls --all
-          if [[ "${{ github.ref }}" == refs/tags/release-prod* ]]; then
-            pulumi stack select prod --create
-          else
-            pulumi stack select dev
-          fi
-        env:
-          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+      # - name: Select Pulumi stack
+      #   working-directory: ./private-repo/infra
+      #   run: |
+      #     pulumi stack ls --all
+      #     if [[ "${{ github.ref }}" == refs/tags/release-prod* ]]; then
+      #       pulumi stack select prod --create
+      #     else
+      #       pulumi stack select dev
+      #     fi
+      #   env:
+      #     PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
 
       - name: Configure Pulumi release tag
         working-directory: ./private-repo/infra
